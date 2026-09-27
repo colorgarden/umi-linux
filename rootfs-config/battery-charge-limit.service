@@ -1,0 +1,16 @@
+[Unit]
+Description=Battery charge limit (stop charging at UPPER percent)
+Documentation=file:/root/README-mi10.md
+After=local-fs.target
+ConditionPathExists=/usr/local/bin/battery-charge-limit
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/battery-charge-limit
+Restart=on-failure
+RestartSec=10
+# 阈值改这里：UPPER=75 LOWER=70 INTERVAL=30
+EnvironmentFile=-/etc/default/battery-charge-limit
+
+[Install]
+WantedBy=multi-user.target

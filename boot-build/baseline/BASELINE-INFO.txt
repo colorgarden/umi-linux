@@ -1,0 +1,21 @@
+=== 基线（别人自己构建时需要的上游材料）===
+
+--- 基线 boot 镜像（Armbian trunk，未被我们改过）---
+文件: Armbian-unofficial_26.11.0-trunk_Xiaomi-umi_trixie_current_6.18.52_minimal.boot_sm8250-xiaomi-umi-csot.img
+大小: 47927296 B
+5e84338861dba107ad408708efd0d4e52fd4f199b96322142ebba3887e4d8624  Armbian-unofficial_26.11.0-trunk_Xiaomi-umi_trixie_current_6.18.52_minimal.boot_sm8250-xiaomi-umi-csot.img
+
+--- 基线 rootfs 镜像（Debian 13 trixie minimal）---
+文件: Armbian-unofficial_26.11.0-trunk_Xiaomi-umi_trixie_current_6.18.52_minimal.rootfs.img
+大小: 5636329472 B (5.25 GiB)
+22224bd8a2110cb2ad7504e7b207a124b84225b7115e7dd92cdce6a568aca48f  Armbian-unofficial_26.11.0-trunk_Xiaomi-umi_trixie_current_6.18.52_minimal.rootfs.img
+
+--- 基线 DTB（从上面 boot 镜像里取出的原始 DTB，未改过）---
+文件: open/baseline/armbian-baseline-umi-csot.dtb  大小: 129518 B
+7a053c857c4d9254fe1a370b951a7b5ed1d662bf7ff4197e5b51d7f9b50d6862 */e/data/mi10/output/umi-csot-from-bootimg.dtb
+
+--- 内核 ---
+6.18.52-current-sm8250（Armbian sm8250 family current 分支，构建时间 Mon Sep 14 19:36:19 CST 2026）
+
+--- 原厂 dtbo（必须保留原厂，不能替换）---
+umi_images_V12.5.10.0.RJBCNXM_20211026.0000.00_11.0_cn/images/dtbo.img

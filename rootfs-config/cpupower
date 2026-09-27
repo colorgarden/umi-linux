@@ -1,0 +1,4 @@
+# 小米 10 Linux —— CPU 调频调速器配置
+# cpupower.service 会读取本文件的 GOVERNOR 并写入全部 cpufreq policy。
+# 可选: schedutil(省电/EAS) / performance(高性能, 全核锁最高频) / powersave / ondemand / conservative
+GOVERNOR="performance"

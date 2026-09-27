@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi 10 — Xiaomi Mi 10 (SMS)
+ */
+
+/dts-v1/;
+
+#include "sm8250-xiaomi-umi-common.dtsi"
+
+/ {
+	model = "Xiaomi Mi 10 (SMS)";
+	compatible = "xiaomi,umi", "qcom,sm8250";
+};
+
+/*
+ * 面板驱动在 umi 上尚未可用（drm/msm 的 DSC CMD Mode 问题，
+ * https://gitlab.freedesktop.org/drm/msm/-/issues/42），
+ * 无头服务器不需要显示输出，因此保持关闭。
+ * 系统通过 bootloader 留下的 simple-framebuffer 输出控制台，
+ * 用内核参数 consoleblank=60 让 AMOLED 黑屏（= 等效熄屏）。
+ *
+ * 如果将来想启用屏幕，取消下面注释并解决 DSC CMD Mode 问题：
+ *
+ * &display_panel {
+ * 	compatible = "xiaomi-umi-sms";
+ * 	status = "okay";
+ * };
+ */

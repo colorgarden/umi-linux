@@ -1,0 +1,16 @@
+[Unit]
+Description=Assert panel reset GPIO to power off the display (Xiaomi Mi 10)
+Documentation=file:/root/README-mi10.md
+After=local-fs.target
+ConditionPathExists=/usr/local/bin/panel-hold
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/panel-hold
+Restart=on-failure
+RestartSec=3
+# 这个服务的作用就是「一直按住引脚」，所以不要让它被 systemd 自动停掉
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

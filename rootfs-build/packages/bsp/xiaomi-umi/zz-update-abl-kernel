@@ -1,0 +1,61 @@
+#!/bin/bash
+# 内核升级后自动重建可通过 Qualcomm ABL 引导的 boot 镜像
+# 安装位置：/etc/kernel/postinst.d/zz-update-abl-kernel
+#
+# 相比原始版本的两处改动：
+#   1. cmdline 里补上 consoleblank=60（否则内核升级后息屏设置会丢失）
+#   2. 面板型号探测失败时不再静默默认 csot，而是明确报错
+
+set -e
+
+machine_model=$(cat /sys/firmware/devicetree/base/model 2>/dev/null | tr '\0' '\n')
+
+case "$machine_model" in
+	"Xiaomi Mi 10 (SMS)")
+		panel_type=sms
+		;;
+	"Xiaomi Mi 10 (CSOT)")
+		panel_type=csot
+		;;
+	*)
+		echo "zz-update-abl-kernel: 无法从设备树 model 判断面板型号（读到 '${machine_model}'）" >&2
+		echo "zz-update-abl-kernel: 请手动指定 panel_type=csot 或 sms 后重试" >&2
+		exit 1
+		;;
+esac
+
+new_rootfs_image_uuid=$(sed -e 's/^.*root=UUID=//' -e 's/ .*$//' < /proc/cmdline)
+
+if [ -z "$new_rootfs_image_uuid" ]; then
+	echo "zz-update-abl-kernel: 无法从 /proc/cmdline 解析 rootfs UUID" >&2
+	exit 1
+fi
+
+dtb="/usr/lib/linux-image-*-sm8250-arm64/qcom/sm8250-xiaomi-umi-${panel_type}.dtb"
+# shellcheck disable=SC2086
+if ! ls $dtb >/dev/null 2>&1; then
+	echo "zz-update-abl-kernel: 找不到设备树 $dtb" >&2
+	exit 1
+fi
+
+gzip -c /boot/vmlinuz-*-sm8250-arm64 > /tmp/Image.gz
+
+# shellcheck disable=SC2086
+cat /tmp/Image.gz $dtb > "/tmp/Image.gz-dtb-${panel_type}"
+
+/usr/bin/mkbootimg \
+	--kernel "/tmp/Image.gz-dtb-${panel_type}" \
+	--ramdisk /boot/initrd.img-*-sm8250-arm64 \
+	--base 0x0 \
+	--second_offset 0x00f00000 \
+	--cmdline "clk_ignore_unused pd_ignore_unused consoleblank=60 root=UUID=${new_rootfs_image_uuid}" \
+	--kernel_offset 0x8000 \
+	--ramdisk_offset 0x1000000 \
+	--tags_offset 0x100 \
+	--pagesize 4096 \
+	-o "/boot/armbian-kernel-${panel_type}.img"
+
+rm -f /tmp/Image.gz "/tmp/Image.gz-dtb-${panel_type}"
+
+echo "zz-update-abl-kernel: 已生成 /boot/armbian-kernel-${panel_type}.img（面板 ${panel_type}）"
+echo "zz-update-abl-kernel: 刷入方法：fastboot flash boot /boot/armbian-kernel-${panel_type}.img"

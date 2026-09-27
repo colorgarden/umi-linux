@@ -1,0 +1,6 @@
+# 充电上限配置 —— 改完执行 systemctl restart battery-charge-limit
+# 电量到 UPPER% 停止充电，掉到 LOWER% 再恢复
+UPPER=70
+LOWER=65
+# 轮询间隔（秒），仅用户态兜底路径用到
+INTERVAL=30

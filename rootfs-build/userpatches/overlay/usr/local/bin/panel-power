@@ -1,0 +1,100 @@
+#!/bin/bash
+#
+# panel-power —— 真正关掉/恢复小米10 的屏幕（拉面板 reset 引脚）
+#
+# 原理
+#   小米10 的面板 reset 是 TLMM GPIO 12。依据小米官方设备树：
+#     arch/arm64/boot/dts/vendor/qcom/umi-sm8250.dtsi
+#       &dsi_sim_vid { qcom,platform-reset-gpio = <&tlmm 12 0>; };
+#   flag 0 = GPIO_ACTIVE_HIGH，所以「拉高 = 面板处于 reset = 屏幕断电」。
+#
+#   主线的 mdss / 面板驱动是禁用的（DSC CMD Mode 有 bug），
+#   所以这个引脚**没有被任何驱动占用**，可以直接从用户态用 libgpiod 控制。
+#   —— 因此不需要改设备树，风险比改 DTS 小得多。
+#
+# 用法
+#   sudo panel-power off      拉高 GPIO12，面板进 reset，屏幕真正断电（默认开机就做）
+#   sudo panel-power on       释放引脚，但**屏幕不会亮**（见下方说明）
+#   sudo panel-power status   查看状态
+#
+# ⚠️ 重要
+#   面板驱动没启用，Linux 无法重新初始化面板，所以 `on` 之后屏幕也不会亮。
+#   想让屏幕恢复，**重启设备**即可（bootloader 会重新初始化面板）。
+#
+# 如果 off 之后屏幕还亮着，说明极性判断反了，把下面的 ACTIVE_LEVEL 改成 0 再试。
+#
+set -u
+
+# 面板 reset 被「断言」时的电平：1 = 拉高（官方 DTS flag 0 = ACTIVE_HIGH）
+ACTIVE_LEVEL="${PANEL_RESET_ACTIVE_LEVEL:-1}"
+GPIO_LINE="${PANEL_RESET_GPIO:-12}"
+SERVICE="panel-off.service"
+
+die() { echo "错误：$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "请用 sudo 运行：sudo $0 $*"
+
+# 找 tlmm 的 gpiochip（label 形如 f100000.pinctrl）
+find_chip() {
+	local c
+	c=$(gpiodetect 2>/dev/null | awk '/f100000\.pinctrl/{print $1; exit}')
+	[ -z "$c" ] && c=$(gpiodetect 2>/dev/null | awk '/tlmm|pinctrl/{print $1; exit}')
+	[ -n "$c" ] && echo "$c"
+}
+
+cmd_status() {
+	local chip
+	chip=$(find_chip)
+	echo "面板 reset 引脚 : GPIO $GPIO_LINE（断言电平 = $ACTIVE_LEVEL）"
+	echo "tlmm gpiochip   : ${chip:-未找到}"
+	if [ -n "$chip" ]; then
+		printf "当前引脚值      : %s\n" "$(gpioget "$chip" "$GPIO_LINE" 2>/dev/null || echo '读取失败')"
+	fi
+	if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+		echo "保持服务        : 运行中（引脚被按住，屏幕处于关闭状态）"
+	else
+		echo "保持服务        : 未运行（引脚已释放）"
+	fi
+	systemctl is-enabled --quiet "$SERVICE" 2>/dev/null \
+		&& echo "开机自启        : 是" || echo "开机自启        : 否"
+}
+
+cmd_off() {
+	local chip
+	chip=$(find_chip)
+	[ -n "$chip" ] || die "找不到 tlmm gpiochip，确认内核有 CONFIG_GPIO_CDEV"
+
+	# 用 systemd 服务「按住」引脚：gpioset --mode=signal 会一直保持到被停止
+	systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+	systemctl restart "$SERVICE"
+	sleep 1
+	if systemctl is-active --quiet "$SERVICE"; then
+		echo "✅ 已关闭面板（GPIO $GPIO_LINE = $ACTIVE_LEVEL），并设为开机自启"
+		echo
+		echo "   屏幕现在应该是全黑的（面板断电，不是显示黑图）。"
+		echo "   想恢复屏幕：重启设备，或 sudo panel-power on && reboot"
+	else
+		die "服务启动失败，看：journalctl -u $SERVICE -n 30 --no-pager"
+	fi
+}
+
+cmd_on() {
+	systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+	local chip
+	chip=$(find_chip)
+	if [ -n "$chip" ]; then
+		# 释放回反相电平（一次性设置后立即释放）
+		gpioset --mode=exit "$chip" "$GPIO_LINE=$((1 - ACTIVE_LEVEL))" 2>/dev/null || true
+	fi
+	echo "已释放面板 reset 引脚，并取消开机自启。"
+	echo
+	echo "⚠️ 屏幕**不会**因此亮起来 —— 面板驱动没启用，Linux 无法重新初始化面板。"
+	echo "   想让屏幕恢复：reboot"
+}
+
+case "${1:-}" in
+	off)    cmd_off ;;
+	on)     cmd_on ;;
+	status|"") cmd_status ;;
+	*)      echo "用法：sudo $0 {off|on|status}" >&2; exit 1 ;;
+esac

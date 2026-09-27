@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# panel-hold —— 把面板 reset 引脚按在「关闭」电平上不放（供 systemd 托管）
+#
+# gpioset --mode=signal 会一直保持引脚电平，直到收到 SIGTERM/SIGINT。
+# systemd 停止服务时正好发 SIGTERM，所以这个组合能稳定「按住」引脚。
+#
+# 由 panel-off.service 调用，一般不用手动跑。
+#
+set -u
+
+ACTIVE_LEVEL="${PANEL_RESET_ACTIVE_LEVEL:-1}"
+GPIO_LINE="${PANEL_RESET_GPIO:-12}"
+
+CHIP=$(gpiodetect 2>/dev/null | awk '/f100000\.pinctrl/{print $1; exit}')
+[ -z "$CHIP" ] && CHIP=$(gpiodetect 2>/dev/null | awk '/tlmm|pinctrl/{print $1; exit}')
+
+if [ -z "$CHIP" ]; then
+	echo "panel-hold: 找不到 tlmm gpiochip（需要内核 CONFIG_GPIO_CDEV 和 libgpiod）" >&2
+	exit 1
+fi
+
+echo "panel-hold: 按住 $CHIP 的 GPIO $GPIO_LINE = $ACTIVE_LEVEL（面板 reset）"
+exec gpioset --mode=signal "$CHIP" "${GPIO_LINE}=${ACTIVE_LEVEL}"

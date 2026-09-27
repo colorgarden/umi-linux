@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+#
+# battery-charge-limit —— 把充电上限压在指定百分比（默认 75%）
+#
+# 行为（滞回，避免在阈值附近反复通断）
+#   电量 >= UPPER%   → 停止充电
+#   电量 <= LOWER%   → 恢复充电
+#   LOWER ~ UPPER 之间 → 维持现状
+#
+# 两条实现路径（自动选择）
+#   1) 内核原生：充电器 psy 有 charge_control_end_threshold 时，直接写 UPPER，
+#      由驱动自己控制（最干净，没有轮询开销）
+#   2) 用户态兜底：充电器 psy 有 charging_enabled 时，轮询电量并通断充电
+#      —— Armbian 的 qcom_pm8150b_charger 驱动（补丁 0037）就提供这个属性
+#
+# 可用环境变量（写进 /etc/default/battery-charge-limit 即可持久化）
+#   UPPER=75     上限百分比
+#   LOWER=70     恢复充电的下限百分比
+#   INTERVAL=30  轮询间隔（秒）
+#   SYSFS_ROOT=/sys         仅用于单测，正常不用改
+#   BATTERY_CHARGE_LIMIT_LIB=1   只加载函数、不进入主循环（单测用）
+#
+set -u
+
+# ---------------------------------------------------------------- 找设备
+find_battery() {
+	local d
+	for d in ${SYSFS_ROOT}/class/power_supply/*/; do
+		[ -r "$d/capacity" ] || continue
+		# 排除充电器/适配器类（它们通常没有 capacity，双保险再排一次名字）
+		case "$(basename "$d")" in
+			usb|USB|ac|AC|main|Main|wireless|dc) continue ;;
+		esac
+		echo "${d%/}"; return 0
+	done
+	return 1
+}
+
+find_psy_with() {
+	local attr="$1" d
+	for d in ${SYSFS_ROOT}/class/power_supply/*/; do
+		[ -e "$d/$attr" ] && { echo "${d%/}"; return 0; }
+	done
+	return 1
+}
+
+# ---------------------------------------------------------------- 决策（纯函数）
+# 输入：$1=当前电量  $2=当前状态（unknown=未知 / on / off）
+# 输出："<动作> <新状态>"，动作 ∈ none|off|on
+#
+# 这是整个限充的核心语义，单独抽出来是为了能脱离硬件做确定性单测。
+decide() {
+	local cap="$1" state="$2"
+
+	if [ "$cap" -ge "$UPPER" ]; then
+		# 到顶了。已经关了就什么都不做，否则关掉
+		[ "$state" = "off" ] && { echo "none off"; return 0; }
+		echo "off off"; return 0
+	fi
+
+	if [ "$cap" -le "$LOWER" ]; then
+		# 到底了。已经开着就什么都不做，否则打开
+		[ "$state" = "on" ] && { echo "none on"; return 0; }
+		echo "on on"; return 0
+	fi
+
+	# 滞回区间：维持现状
+	echo "none $state"; return 0
+}
+
+log() { echo "[charge-limit] $*"; }
+
+# ================================================================ 单测入口
+# 被 source 时只提供上面的函数，不碰 /sys、不进入循环。
+# 直接执行时 `return` 会报错，所以失败就退化成 exit。
+if [ "${BATTERY_CHARGE_LIMIT_LIB:-}" = "1" ]; then
+	return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------- 配置
+# 优先级：环境变量 > /etc/default/battery-charge-limit > 内置默认
+# 先记住环境里的值，再读配置文件，最后环境变量盖回去
+_cfg_upper="${UPPER-}"; _cfg_lower="${LOWER-}"
+_cfg_interval="${INTERVAL-}"; _cfg_sysfs="${SYSFS_ROOT-}"
+
+[ -r /etc/default/battery-charge-limit ] && . /etc/default/battery-charge-limit
+
+UPPER="${_cfg_upper:-${UPPER:-75}}"
+LOWER="${_cfg_lower:-${LOWER:-70}}"
+INTERVAL="${_cfg_interval:-${INTERVAL:-30}}"
+SYSFS_ROOT="${_cfg_sysfs:-${SYSFS_ROOT:-/sys}}"
+unset _cfg_upper _cfg_lower _cfg_interval _cfg_sysfs
+
+# 参数必须是非负整数，否则下面 decide() 里的 [ -ge ] 会直接报错刷屏。
+# 用 ${!v} 间接展开，不要用 eval（eval 遇到含 $(...) 的值会把它执行掉）。
+for v in UPPER LOWER INTERVAL; do
+	val="${!v}"
+	case "$val" in
+		''|*[!0-9]*)
+			echo "[charge-limit] $v='$val' 不是非负整数，退出" >&2
+			exit 1 ;;
+	esac
+done
+
+if [ "$UPPER" -le "$LOWER" ]; then
+	log "警告：UPPER(${UPPER}%) <= LOWER(${LOWER}%)，滞回区间无效，"
+	log "      会退化成在阈值附近反复通断。建议 LOWER 比 UPPER 小 3~5。"
+fi
+
+# ---------------------------------------------------------------- 主流程
+BATT=$(find_battery) || { log "找不到带 capacity 的电池设备，退出"; exit 1; }
+log "电池设备：$BATT"
+
+# 优先走内核原生
+if THRESH_PSY=$(find_psy_with charge_control_end_threshold); then
+	log "使用内核原生 charge_control_end_threshold：$THRESH_PSY"
+	log "设置充电上限为 ${UPPER}%"
+	if echo "$UPPER" > "$THRESH_PSY/charge_control_end_threshold" 2>/dev/null; then
+		log "已生效。当前值：$(cat "$THRESH_PSY/charge_control_end_threshold" 2>/dev/null)"
+		# 原生路径不需要轮询，保持进程存活以便 systemd 管理
+		exec sleep infinity
+	else
+		log "写入失败，回退到用户态轮询"
+	fi
+fi
+
+# 用户态兜底
+CHG=$(find_psy_with charging_enabled) || {
+	log "这个内核的充电器没有 charging_enabled / charge_control_end_threshold 属性，"
+	log "无法限充。检查："
+	log "  ls ${SYSFS_ROOT}/class/power_supply/"
+	log "  ls ${SYSFS_ROOT}/class/power_supply/*/ | head -50"
+	log "  dmesg | grep -i -E 'pm8150b|smb5|charger'"
+	exit 1
+}
+log "使用用户态轮询：充电器 $CHG 的 charging_enabled"
+
+STATE="unknown"
+while :; do
+	if [ ! -r "$BATT/capacity" ]; then
+		log "读不到 $BATT/capacity，等 $INTERVAL 秒重试"
+		sleep "$INTERVAL"; continue
+	fi
+	CAP=$(cat "$BATT/capacity" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
+
+	# capacity 可能是 "75" 或 "75\n"；非数字就跳过
+	case "$CAP" in
+		''|*[!0-9]*) sleep "$INTERVAL"; continue ;;
+	esac
+
+	set -- $(decide "$CAP" "$STATE")
+	ACTION="$1"; NEWSTATE="$2"
+
+	case "$ACTION" in
+		off)
+			if echo 0 > "$CHG/charging_enabled" 2>/dev/null; then
+				STATE="$NEWSTATE"
+				log "电量 ${CAP}% ≥ ${UPPER}% → 已停止充电"
+			else
+				log "写入 $CHG/charging_enabled 失败（可能需要 root）"
+			fi
+			;;
+		on)
+			if echo 1 > "$CHG/charging_enabled" 2>/dev/null; then
+				STATE="$NEWSTATE"
+				log "电量 ${CAP}% ≤ ${LOWER}% → 已恢复充电"
+			else
+				log "写入 $CHG/charging_enabled 失败（可能需要 root）"
+			fi
+			;;
+		none)
+			# 维持现状：状态原样带回（首次采样时是 unknown，等到跨过某个
+			# 阈值才会被赋予确定的 on/off）
+			STATE="$NEWSTATE"
+			;;
+	esac
+
+	sleep "$INTERVAL"
+done

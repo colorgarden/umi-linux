@@ -1,0 +1,17 @@
+# 发布产物走 GitHub Releases，不进 git（见 docs/04-发布与下载.md）
+/boot/*.img
+/rootfs/*.tar.gz
+/rootfs/parts/
+
+# 构建中间产物
+boot-build/out/
+rootfs-build/output/
+*.rebuilt.dtb
+
+# 编辑器 / 系统噪声
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*~
+*.bak-*
