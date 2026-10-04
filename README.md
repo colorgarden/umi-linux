@@ -50,6 +50,14 @@ sha256sum -c SHA256SUMS.txt
 
 ---
 
+> ⚠️ **两条图形栈警告（2026-10 追加，完整细节见 §九）**
+> ① **在容器里跑 GL / ANGLE 系应用**（Chromium / Electron / CEF、无头浏览器截图、Kasm / webtop、Waydroid 之类）
+> 会命中镜像内 **Mesa 25.0.7 的 ANGLE-on-freedreno bug** → 顶点 / UI 渲染错乱；
+> 绕过办法是 **drirc 伪装 `GL_VENDOR`**，**不用换内核、不用重刷镜像**。
+> ② **GPU 频率 800 MHz 是超频档**：865（非 Plus）原厂验证过的最高档是 **587 MHz**。
+> 若把 `min_freq` 与 `max_freq` 都写成 800 MHz（等于钉死），调速器再也不能降频，
+> 而本内核 **没有 GPU cooling device（无过热降频保护）** → **本项目现已改回原厂 587 MHz**。
+
 ## 一、这是什么
 
 一句话：**把一台小米 10 变成一台跑 Debian 13 的 ARM 小服务器。**
@@ -107,7 +115,7 @@ USB 串口控制台、Adreno 650 GPU（OpenGL / Vulkan）、Venus 视频硬编�
 | **USB Host（外接键鼠 / U 盘）** | USB 口默认被用作 **gadget**（网卡 + 串口）。内核已开 `CONFIG_USB_ROLE_SWITCH`，但要真插键鼠得停掉 gadget 服务再切 host 角色，本包未提供现成脚本 |
 | **休眠 / 深度待机** | 内核支持 `s2idle`，但本项目主动 **mask 了 sleep/suspend**（服务器要常在线）；实测从未休眠过。WiFi 省电也**关闭** |
 | **超过 ~8 路 1080p30 的并发编码** | 硬件吞吐上限（额定约 500 MP/s ≈ 4K@60）；12/16 路会被驱动拒绝 |
-| **GPU 超频档的过热保护** | 超频到 800/900 MHz 超出熔丝（speed-bin）验证范围，而**本内核没注册 GPU cooling device → 无过热降频保护**。默认上限 800 MHz，可改回 587 |
+| **GPU 超频档的过热保护** | **670 MHz 以上**即超出熔丝（speed-bin）验证范围，而**本内核没注册 GPU cooling device → 无过热降频保护**。镜像默认上限 **800 MHz**（超频档，见 §九 警告 B）；**本项目现已改回原厂 587 MHz** |
 | **Android 应用 / Google 服务 / 双系统** | 这个方案就是**不要 Android** |
 
 ---
@@ -173,7 +181,7 @@ USB 串口控制台、Adreno 650 GPU（OpenGL / Vulkan）、Venus 视频硬编�
 | 3 | **USB 双通道**（NCM 网卡 + ACM 串口） | Windows 免驱 426 Mbps；串口 autologin root，成为救砖通道 |
 | 4 | **GPU（Adreno 650）点亮** | 内核补丁 + 启用 mdss + 小米签名 zap shader → `renderD128`；**Vulkan 1.3 / GL 4.6 / GLES 3.2** 真硬件跑通 |
 | 5 | **Venus 视频硬编解 + 动态调频修复** | 修掉 DTB 里 OPP 频率放错时钟域的问题（`-ERANGE`）→ **8 路 1080p 硬编 8/8 通过**（修复前 5/8） |
-| 6 | **GPU 超频**（可用、可关） | 60 秒长烤：800 MHz **+34.8%**、900 MHz **+53.0%** vs 原厂 587 MHz；1 GHz 不稳定（已剔除） |
+| 6 | **GPU 超频**（可用、可关；现已回退到原厂档） | 60 秒长烤：800 MHz **+34.8%**、900 MHz **+53.0%** vs 原厂 587 MHz；1 GHz 不稳定（已剔除）。⚠️ 670 MHz 以上超出熔丝验证范围且**无过热降频保护** → 现默认改回 **587 MHz**（§九 警告 B） |
 | 7 | **电池与充电保护** | PM8150B 电量计接入；`battery-charge-limit` 滞回区间（70/65）带 37 项单测；停充实测电流归零 |
 | 8 | **息屏 / 功耗** | GPIO 给面板断电，杜绝白耗电；`consoleblank` 兜底 |
 | 9 | **保命与可诊断** | 异常重启自动落 TWRP；每次启动自动采集诊断快照 |
@@ -272,8 +280,8 @@ vi /etc/default/battery-charge-limit     # UPPER=70 / LOWER=65
 systemctl restart battery-charge-limit
 journalctl -u battery-charge-limit -f    # 看它决策
 
-# 3) GPU 频率上限（默认 800 MHz；想回原厂 587 或冒险上 900 都改这里）
-vi /etc/default/umi-gpu-maxfreq          # GPU_MAX_FREQ=800000000
+# 3) GPU 频率（⚠️ 800 MHz 是超频档、且无过热降频保护 → 建议按 §九 警告 B 改回原厂 587）
+vi /etc/default/umi-gpu-maxfreq          # GPU_MAX_FREQ=587000000 / GPU_MIN_FREQ=305000000
 systemctl restart umi-gpu-maxfreq
 ```
 
@@ -357,13 +365,55 @@ modemst1  modemst2  fsg  fsc  persist  mdm1m9kefs1  mdm1m9kefs2  mdm1m9kefs3
 | **`armbian` 账号在 `sudo` 与 `docker` 组** | 用它登录后 `sudo` 即 root（`docker` 组本身也等价 root），**与 root 同级风险** | **务必 `passwd -l armbian`**，或 `userdel -r arming`（确认不需要它） |
 | SSH 主机密钥随镜像分发 | 所有人共用同一对主机密钥（中间人风险） | `rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl restart ssh` |
 | `umi-put`（8080 无鉴权文件服务） | **已默认不自启** | 需要时 `systemctl start umi-put`，别暴露到公网 |
-| GPU 超频 | 无过热降频保护 | 改 `/etc/default/umi-gpu-maxfreq` 回 `587000000` |
+| **GPU 超频 / 钉频**（镜像默认上限 800 MHz） | **670 MHz 以上**超出熔丝（speed-bin）验证范围；本内核**无 GPU cooling device → 无过热降频保护**；若 `min_freq` 也设成 800 MHz 则**彻底不降频**（待机功耗上升） | 见本节末「两条图形栈警告」B：把 `/etc/default/umi-gpu-maxfreq` 改回 `587000000`（下限回 `305000000`） |
 | 保命机制会写 `misc` 分区 | 故意设计：异常重启落 TWRP | 正常运行由 `/data/` 下的标志位维持 |
 
 ### 一个真会崩机的坑
 
 **不要读 `/sys/bus/nvmem/devices/qfprom0/nvmem`（efuse）** —— 那个电源域开机后会断电，
 再访问它的 MMIO 会直接 **异步 SError → Kernel panic**。同理：**任何已断电外设的 MMIO 都不要碰**。
+
+---
+
+### ⚠️ 两条图形栈警告（2026-10 更新）
+
+排查"容器里渲染不对 / GPU 跑得不对"时实测确认的两个因素 —— **一个是上游软件 bug，一个是我们自己设置出来的坑**：
+
+| # | 因素 | 性质 | 处置 |
+|---|---|---|---|
+| **A** | **容器内 Mesa 25.0.7 缺少上游那段 ANGLE-on-freedreno workaround** | 软件 bug（上游 Mesa **MR !36540**，Rob Clark，已 Cc `mesa-stable`；对应 ANGLE issue **431097618**「BaseVertex draws with client attributes are broken」；Ubuntu bug **#2121774** 称「**所有骁龙机型中招**」；修复版 **25.2.1**） | ✅ **已修**：drirc 伪装 `GL_VENDOR` |
+| **B** | **GPU devfreq 被人为锁死在 800 MHz 超频档**（机器自带配置注释：587 MHz 才是 865 原厂最稳档） | 环境配置异常 | ✅ **已改回 587 MHz** |
+
+#### A. 容器里跑 ANGLE 系 GL 应用会渲染错乱（上游 bug）
+
+- **什么时候会撞上**：在容器里跑 **ANGLE 系**应用 —— Chromium / Electron / CEF（无头浏览器截图、Kasm / webtop、Waydroid 之类）
+  走 `GL` 后端时，**`BaseVertex` + client attributes 的绘制会错乱**（顶点乱飞 / UI 撕裂 / 画面花）。
+- **根因不在本方案，在上游**：镜像里的 **Mesa 25.0.7** 早于该修复（**25.2.1** 才修），所以 Debian 13 trixie 自带的
+  Mesa 天生缺这段 workaround —— 这跟"小米 10 / SM8250 / freedreno"没关系，**所有骁龙机型都中招**。
+- **绕过办法（已验证）**：**用 drirc 伪装 `GL_VENDOR`**，让 Mesa 识别出"这是 ANGLE"从而走进 workaround 分支。
+  **不需要换内核、不需要重刷镜像**，纯用户态配置。
+- 本机实测：**其它路径（原生 GL、Vulkan/Turnip、Venus 硬编解）都不受影响**，只有 ANGLE-on-freedreno 中招。
+
+#### B. GPU 频率被钉在 800 MHz 超频档（我们自己的配置）
+
+- **587 MHz 才是原厂档**：865（非 Plus）在熔丝（speed-bin）里验证过的最高频率就是 **587 MHz** ——
+  `/etc/default/umi-gpu-maxfreq` 的注释里写得明明白白（「587000000 = 865 非 Plus 原厂最高档（默认，最稳）」）。
+- **800 MHz 是超频档**：靠 DTB 里另加的档位 + 加压跑出来的（本仓库的 boot 镜像自带这些档位，见 §四 第 6 条）。
+- **"锁死在 800" 比"上限 800"更糟**：如果 `min_freq` 也被写成 800 MHz（`min == max`），调速器**再也不能降频**
+  → 空闲也满频、待机功耗上升；而本内核**没有注册 GPU cooling device**，也就是**没有任何过热降频保护**。
+- **处置**：本项目**已改回 587 MHz**。
+
+```bash
+# 改回原厂最稳档（设备端一条命令，立即生效，不需要重刷任何镜像）
+sed -i 's/^GPU_MAX_FREQ=.*/GPU_MAX_FREQ=587000000/; s/^GPU_MIN_FREQ=.*/GPU_MIN_FREQ=305000000/' \
+    /etc/default/umi-gpu-maxfreq
+systemctl restart umi-gpu-maxfreq
+cat /sys/class/devfreq/3d00000.gpu/available_frequencies   # 档位表还在（超频档可用、可关）
+cat /sys/class/devfreq/3d00000.gpu/cur_freq                # 空闲应落在 305~587 MHz 之间
+```
+
+> 📌 **本仓库 `v2026-09-27` 镜像内的默认值仍是 `GPU_MAX_FREQ=800000000`**（镜像在该调整之前导出，附件未重打包）。
+> 想要"开箱即原厂最稳"，刷完按上面两条命令改一次即可 —— 这只是**设备端配置**，与镜像/校验和无关。
 
 ---
 

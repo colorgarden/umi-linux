@@ -65,6 +65,12 @@ bash /root/wifi-connect.sh                              # 配 WiFi
 - USB 默认是 **gadget**（网卡 + 串口），要接键鼠/U 盘需自行切换 host 角色
 - **不休眠**（sleep/suspend 被主动 mask，服务器要常在线）
 - GPU 超频档**没有过热降频保护**，长期满载请自行关注温度
+- ⚠️ **容器里跑 ANGLE 系 GL 应用**（Chromium / Electron / CEF、无头浏览器、Kasm / Waydroid）会命中
+  **Mesa 25.0.7 的 ANGLE-on-freedreno bug** → `BaseVertex` 绘制错乱（上游 **25.2.1** 才修）
+  → 用 **drirc 伪装 `GL_VENDOR`** 绕过，**不需要换内核 / 重刷镜像**
+- ⚠️ **GPU 频率**：镜像默认上限 **800 MHz 属超频档**（865 原厂熔丝验证最高档是 **587 MHz**）；
+  若把 `min_freq` 也写成 800（钉死）则**再也不会降频**，而本内核**无过热降频保护**
+  → 建议改回 `587000000`（`/etc/default/umi-gpu-maxfreq`）。本项目现已改回 587
 
 完整能力矩阵见仓库 `README.md`，刷机流程见 `docs/01-快速开始.md`，使用手册见 `docs/02-使用指南.md`。
 
